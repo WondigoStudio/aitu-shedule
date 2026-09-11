@@ -78,6 +78,7 @@ app.get('/api/debug/:code', (req, res) => {
     todayIndex: getTodayIndex(entry.tzOffsetMinutes),
     lessonsToday: (entry.schedule[getTodayIndex(entry.tzOffsetMinutes)] || entry.schedule[String(getTodayIndex(entry.tzOffsetMinutes))] || []).map(l => ({ id: l.id, subject: l.subject, time: l.time })),
     serverCurrentLesson: current ? { id: current.id, subject: current.subject, time: current.time } : null,
+    upcomingNotified: entry.upcomingNotified || {},
     serverTimeNow: new Date().toString(),
     localTimeNowForCode: entry.tzOffsetMinutes != null ? new Date(Date.now() - entry.tzOffsetMinutes*60000).toISOString().slice(11,16) : 'unknown (no tz sent yet)'
   });
