@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "main": "server.js",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.js"
   },
@@ -11,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@upstash/redis": "^1.38.4",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "web-push": "^3.6.7"
