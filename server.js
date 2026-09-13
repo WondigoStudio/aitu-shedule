@@ -16,7 +16,7 @@ const redis = new Redis({
 });
 
 const CODES_SET = 'schedule:codes';
-const defaultEntry = () => ({ schedule: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]}, subscriptions: [], lastNotified: null, upcomingNotified: {}, tzOffsetMinutes: null });
+const defaultEntry = () => ({ schedule: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]}, subscriptions: [], lastNotified: null, upcomingNotified: {}, endingNotified: {}, lastLiveUpdate: {}, tzOffsetMinutes: null, pin: null });
 
 async function getEntry(code){
   const raw = await redis.get(`schedule:entry:${code}`);
@@ -41,17 +41,26 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
+function pinOk(entry, req){
+  if(!entry.pin) return true; // no PIN set — open
+  const provided = req.body?.pin || req.query?.pin;
+  return provided === entry.pin;
+}
+
 // --- Schedule sync ---
 app.get('/api/schedule/:code', async (req, res) => {
   const entry = await getEntry(req.params.code);
   if(!entry) return res.status(404).json({ error: 'not found' });
-  res.json({ schedule: entry.schedule });
+  if(!pinOk(entry, req)) return res.status(403).json({ error: 'wrong pin' });
+  res.json({ schedule: entry.schedule, hasPin: !!entry.pin });
 });
 
 app.post('/api/schedule/:code', async (req, res) => {
   const entry = await ensureEntry(req.params.code);
+  if(!pinOk(entry, req)) return res.status(403).json({ error: 'wrong pin' });
   entry.schedule = req.body.schedule || entry.schedule;
   if(typeof req.body.tzOffsetMinutes === 'number') entry.tzOffsetMinutes = req.body.tzOffsetMinutes;
+  if(req.body.setPin !== undefined) entry.pin = req.body.setPin || null;
   await setEntry(req.params.code, entry);
   res.json({ ok: true });
 });
@@ -63,6 +72,7 @@ app.get('/api/vapid-public-key', (req, res) => {
 
 app.post('/api/subscribe/:code', async (req, res) => {
   const entry = await ensureEntry(req.params.code);
+  if(!pinOk(entry, req)) return res.status(403).json({ error: 'wrong pin' });
   const sub = req.body.subscription;
   if(!sub || !sub.endpoint) return res.status(400).json({ error: 'bad subscription' });
   const exists = entry.subscriptions.find(s => s.endpoint === sub.endpoint);
@@ -166,7 +176,44 @@ setInterval(async () => {
         });
         for(const sub of entry.subscriptions.slice()){
           try{ await webpush.sendNotification(sub, payload); }
-          catch(e){ entry.subscriptions = entry.subscriptions.filter(s => s.endpoint !== sub.endpoint); }
+          catch(e){ console.error(`push failed for code ${code}:`, e.statusCode || e.message); entry.subscriptions = entry.subscriptions.filter(s => s.endpoint !== sub.endpoint); }
+        }
+      }
+    }
+
+    // Live countdown update every ~10 min while a lesson is ongoing
+    if(current){
+      const r = parseTimeRange(current.time);
+      if(r){
+        const minutesLeft = r.end - nowMin;
+        if(!entry.lastLiveUpdate) entry.lastLiveUpdate = {};
+        const lastUpdateMin = entry.lastLiveUpdate[current.id];
+        const shouldUpdate = lastUpdateMin === undefined || (lastUpdateMin - minutesLeft) >= 10;
+        if(shouldUpdate && minutesLeft > 5){
+          entry.lastLiveUpdate[current.id] = minutesLeft;
+          changed = true;
+          const payload = JSON.stringify({
+            title: 'Идёт: ' + (current.subject || 'Урок'),
+            body: `Осталось ~${minutesLeft} мин · ${[current.teacher, current.decoded || current.room].filter(Boolean).join(' · ')}`,
+          });
+          for(const sub of entry.subscriptions.slice()){
+            try{ await webpush.sendNotification(sub, payload); }
+            catch(e){ console.error(`push failed for code ${code}:`, e.statusCode || e.message); entry.subscriptions = entry.subscriptions.filter(s => s.endpoint !== sub.endpoint); }
+          }
+        }
+        // "5 minutes left" notification
+        if(!entry.endingNotified) entry.endingNotified = {};
+        if(minutesLeft > 0 && minutesLeft <= 5 && entry.endingNotified[current.id] !== todayStr){
+          entry.endingNotified[current.id] = todayStr;
+          changed = true;
+          const payload = JSON.stringify({
+            title: 'Через ' + minutesLeft + ' мин конец: ' + (current.subject || 'Урок'),
+            body: 'Урок скоро закончится',
+          });
+          for(const sub of entry.subscriptions.slice()){
+            try{ await webpush.sendNotification(sub, payload); }
+            catch(e){ console.error(`push failed for code ${code}:`, e.statusCode || e.message); entry.subscriptions = entry.subscriptions.filter(s => s.endpoint !== sub.endpoint); }
+          }
         }
       }
     }
@@ -185,7 +232,7 @@ setInterval(async () => {
         });
         for(const sub of entry.subscriptions.slice()){
           try{ await webpush.sendNotification(sub, payload); }
-          catch(e){ entry.subscriptions = entry.subscriptions.filter(s => s.endpoint !== sub.endpoint); }
+          catch(e){ console.error(`push failed for code ${code}:`, e.statusCode || e.message); entry.subscriptions = entry.subscriptions.filter(s => s.endpoint !== sub.endpoint); }
         }
       }
     }
@@ -194,7 +241,7 @@ setInterval(async () => {
       try{ await setEntry(code, entry); }catch(e){ console.error('setEntry failed', e); }
     }
   }
-}, 30000);
+}, 15000);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('Server running on port ' + PORT));
