@@ -129,6 +129,28 @@ function findCurrentLesson(schedule, tzOffsetMinutes){
 }
 
 // --- Debug ---
+app.get('/api/current/:code', async (req, res) => {
+  const entry = await getEntry(req.params.code);
+  if(!entry) return res.status(404).json({ error: 'not found' });
+  if(!pinOk(entry, req)) return res.status(403).json({ error: 'wrong pin' });
+  const tz = entry.tzOffsetMinutes;
+  const current = findCurrentLesson(entry.schedule || {}, tz);
+  let next = null;
+  if(!current){
+    const idx = getTodayIndex(tz);
+    const nowMin = getLocalNowMinutes(tz);
+    const todays = [...(entry.schedule[idx] || entry.schedule[String(idx)] || [])].sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+    for(const l of todays){
+      const r = parseTimeRange(l.time);
+      if(r && r.start > nowMin){ next = l; break; }
+    }
+  }
+  res.json({
+    current: current ? { subject: current.subject, teacher: current.teacher, room: current.room, decoded: current.decoded, time: current.time } : null,
+    next: next ? { subject: next.subject, teacher: next.teacher, room: next.room, decoded: next.decoded, time: next.time } : null
+  });
+});
+
 app.get('/api/debug/:code', async (req, res) => {
   const entry = await ensureEntry(req.params.code);
   const current = findCurrentLesson(entry.schedule || {}, entry.tzOffsetMinutes);
